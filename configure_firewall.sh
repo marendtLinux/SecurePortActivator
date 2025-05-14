@@ -30,7 +30,7 @@ function check_if_docker_is_installed () {
 function allow_port_access_for_ipaddress_in_docker () {
 	
 	#if the ipaddress is not already granted port access
-	if ! iptables -n -L DOCKER-USER  | grep $2 | grep $1
+	if ! iptables -n -L DOCKER-USER  | grep "$1.*ctorigdstport $2"
 	then
 		#allow packets for port $2 and ip-address $1, 
 		# -m conntrack --ctorigdstpo references the external port that is mapped to the docker port
@@ -45,7 +45,7 @@ function allow_port_access_for_ipaddress_in_docker () {
 function remove_port_access_for_ipaddress_in_docker() {
 
 	#extract line number of rule to remove
-	line_number_rule_to_remove=$(iptables -L DOCKER-USER --line-numbers | grep $1 | grep $2 | awk  '{print $1}') 
+	line_number_rule_to_remove=$(iptables -n -L DOCKER-USER --line-numbers | grep "$1.*ctorigdstport $2" | awk  '{print $1}') 
 	
 	#remove the rule
 	iptables -D DOCKER-USER $line_number_rule_to_remove
