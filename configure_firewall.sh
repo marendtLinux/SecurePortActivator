@@ -10,8 +10,9 @@
 #set -x #tracing-option
 
 
-TESTPORT=80
+TEST_PORTS=(80 443) 
 
+exec >> /root/ausgabe.log 2>&1
 
 function check_if_docker_is_installed () {
 
@@ -26,36 +27,44 @@ function check_if_docker_is_installed () {
 }
 
 # $1: ipaddress
-# $2: Port
 function allow_port_access_for_ipaddress_in_docker () {
 	
-	#if the ipaddress is not already granted port access
-	if ! iptables -n -L DOCKER-USER  | grep "$1.*ctorigdstport $2"
-	then
-		#allow packets for port $2 and ip-address $1, 
-		# -m conntrack --ctorigdstpo references the external port that is mapped to the docker port
-		iptables -I DOCKER-USER -i $(get_external_network_interface) -m conntrack --ctorigdstpo $2 -s $1 -j ACCEPT
-		
-		printf "port access granted for ipaddress %s port %s\n in DOCKER-USER" $1 $2
-	fi
+	#iterate through ports
+	for port in ${TEST_PORTS[*]}
+	do
+		#if the ipaddress is not already granted port access
+		if ! iptables -n -L DOCKER-USER  | grep "$1.*ctorigdstport $port"
+		then
+			#allow packets for port $2 and ip-address $1, 
+			# -m conntrack --ctorigdstpo references the external port that is mapped to the docker port
+			iptables -I DOCKER-USER -i $(get_external_network_interface) -m conntrack --ctorigdstpo $port -s $1 -j ACCEPT
+			
+			printf "port access granted for ipaddress %s port %s\n in DOCKER-USER" $1 $port
+		fi
+	done
 }
 
 # $1: ipaddress
-# $2: Port
 function remove_port_access_for_ipaddress_in_docker() {
 
-	#extract line number of rule to remove
-	line_number_rule_to_remove=$(iptables -n -L DOCKER-USER --line-numbers | grep "$1.*ctorigdstport $2" | awk  '{print $1}') 
+	#iterate through ports
+	for port in ${TEST_PORTS[*]}
+	do
+
+		#extract line number of rule to remove
+		line_number_rule_to_remove=$(iptables -n -L DOCKER-USER --line-numbers | grep "$1.*ctorigdstport $port" | awk  '{print $1}') 
+		
+		#remove the rule
+		iptables -D DOCKER-USER $line_number_rule_to_remove
+		
+		if [ $? -eq 0 ]
+		then
+			printf "port access removed for ipaddress %s port %s in DOCKER-USER\n" $1 $port
+		else
+			printf "Error in removing Docker port access for %s %s \n" $1 $port
+		fi
 	
-	#remove the rule
-	iptables -D DOCKER-USER $line_number_rule_to_remove
-	
-	if [ $? -eq 0 ]
-	then
-		printf "port access removed for ipaddress %s port %s in DOCKER-USER\n" $1 $2
-	else
-		printf "Error in removing Docker port access for %s %s \n" $1 $2
-	fi
+	done
 }
 
 
@@ -69,7 +78,6 @@ function insert_drop_all_packets_rule_for_port_in_docker () {
 
 # function allow_ipaddress_port_access
 # $1: ipaddress
-# $2: Port
 function allow_port_access_for_ipaddress () { 
 
 	check_if_docker_is_installed
@@ -77,27 +85,28 @@ function allow_port_access_for_ipaddress () {
 	#if docker is installed
 	if [ $? -eq 0 ]
 	then
-		allow_port_access_for_ipaddress_in_docker $1 $2
+		allow_port_access_for_ipaddress_in_docker $1
 	fi
 	
-	#if the ipaddress is not already granted port access
-	if ! nft -a list table inet secure_port_guard | grep "tcp dport $2 ip saddr $1 accept"
-	then
-		#get the handle number in the nft firewall for the rule, that drops all packets for the specified port $2
-		handle_number_for_drop_all_rule=$(nft -a list table inet secure_port_guard | grep "tcp dport $2 drop" | awk '{print $7}')
-
-		#allow port access for port $2, for ipaddress $1, place the rule before drop all rule 
-		nft insert rule inet secure_port_guard INPUT position $handle_number_for_drop_all_rule tcp dport $2 ip saddr { $1 } accept
-		
-		printf "port access granted for ipaddress %s port %s\n" $1 $2
-	fi
+	#iterate through ports
+	for port in ${TEST_PORTS[*]}
+	do
+					
+		#if the ipaddress is not already granted port access
+		if ! nft -a list table inet secure_port_guard | grep "tcp dport $port ip saddr $1 accept"
+		then
+			#allow port access for ipaddress $1, place the rule at the top with insert
+			nft insert rule inet secure_port_guard INPUT tcp dport $port ip saddr { $1 } accept
+			
+			printf "port access granted for ipaddress %s port %s\n" $1 $port
+		fi
+	done
 	
 }
 
 
 # function remove_port_access_for_ipaddress
 # $1: ipaddress
-# $2: Port
 function remove_port_access_for_ipaddress () { 
 
 	check_if_docker_is_installed
@@ -105,16 +114,21 @@ function remove_port_access_for_ipaddress () {
 	#if docker is installed
 	if [ $? -eq 0 ]
 	then
-		remove_port_access_for_ipaddress_in_docker $1 $2
+		remove_port_access_for_ipaddress_in_docker $1
 	fi
 
-	#get the handle number in the nft firewall for the rule, that allows port access for the specified ipaddress
-	handle_number_port_access=$(nft -a list table inet secure_port_guard | grep "tcp dport $2 ip saddr $1 accept" | awk 'NR==1 {print $10}')
+	#iterate through ports
+	for port in ${TEST_PORTS[*]}
+	do
+		#get the handle number in the nft firewall for the rule, that allows port access for the specified ipaddress
+		handle_number_port_access=$(nft -a list table inet secure_port_guard | grep "tcp dport $port ip saddr $1 accept" | awk 'NR==1 {print $10}')
 
-	#delete rule with handle six
-	nft delete rule inet secure_port_guard INPUT handle $handle_number_port_access
+		#delete rule with the handle
+		nft delete rule inet secure_port_guard INPUT handle $handle_number_port_access
+		
+		printf "port access removed for ipaddress %s port %s\n" $1 $port
 	
-	printf "port access removed for ipaddress %s port %s\n" $1 $2
+	done
 }
 
 
@@ -165,7 +179,7 @@ function main () {
 		#iterate through ipaddresses of logged in users
 		w | awk 'NR > 2 {print $2}'  | while read ipaddress
 		do
-			allow_port_access_for_ipaddress $ipaddress $TESTPORT
+			allow_port_access_for_ipaddress $ipaddress
 									
 			#we can leave the loop here, because each new connection calls this function. hence only one new ipaddress at a time
 			#break
@@ -206,7 +220,7 @@ function main () {
 	    			#if the ip-address in the firewall belongs not to a currently logged in user
 	    			if [ "$ipaddress_in_firewall_belongs_to_logged_in_user" = "FALSE" ]
 				then
-					remove_port_access_for_ipaddress $ipaddress_in_firewall $TESTPORT
+					remove_port_access_for_ipaddress $ipaddress_in_firewall
 					
 				fi
 	    			
